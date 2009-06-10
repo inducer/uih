@@ -1,0 +1,300 @@
+#! /usr/bin/env python
+
+from __future__ import with_statement
+
+import urwid.curses_display
+import urwid
+import re
+
+ui = urwid.curses_display.Screen()
+ui.register_palette([
+	('input', 'black', 'dark cyan'),
+	('background', 'black', 'light gray'),
+	('result', 'white', 'black'),
+	('title', 'white', 'dark blue'),
+
+	('unichar', 'black', 'dark cyan'),
+	('focused unichar', 'black', 'dark green'),
+
+	('group header', 'light gray', 'dark cyan'),
+	('focused group header', 'light gray', 'dark green'),
+	] )
+
+
+
+
+
+def transform(s):
+    def replace_entity(match):
+        from htmlentitydefs import name2codepoint
+        try:
+            return unichr(name2codepoint[match.group(1)])
+        except KeyError:
+            return match.group(0)
+
+    s = re.sub(r"(?<!\\)\\([A-Za-z0-9]+)\;?", replace_entity, s)
+
+    return s
+
+
+
+
+class CharInfo:
+    def __init__(self, names, groups, codepoint, crossrefs):
+        self.names = names
+        self.search_names = [name.lower() for name in self.names] + \
+                [grp.lower() for grp in groups]
+        self.groups = groups
+        self.codepoint = codepoint
+        self.crossrefs = crossrefs
+        self.unichar = unichr(codepoint)
+
+
+
+
+def read_names_list():
+    result = []
+
+    NL_FILENAME = "/tmp/NamesList.txt.gz"
+
+    from os.path import exists
+    import gzip
+    if not exists(NL_FILENAME):
+        print "one second... fetching unicode names list..."
+        from urllib2 import urlopen
+        nl = urlopen("http://www.unicode.org/Public/5.1.0/ucd/NamesList.txt").read()
+        outf = gzip.open(NL_FILENAME, "w")
+        outf.write(nl)
+        outf.close()
+
+    it = enumerate(iter(gzip.open(NL_FILENAME, "ru")))
+
+    HEX_SET = "0123456789ABCDEF"
+    WHITESPACE = " \t"
+
+    print "one second... reading unicode names list..."
+    current_group = ""
+    try:
+        lineno, l = it.next()
+        while True:
+            assert l
+            if l[0] == "@":
+                words = l.split()
+                if words[0] == "@":
+                    current_group = " ".join(words[1:])
+                    lineno, l = it.next()
+                elif words[0].endswith("+"):
+                    while True:
+                        lineno, l = it.next()
+                        if l[0] not in WHITESPACE:
+                            break
+                else:
+                    lineno, l = it.next()
+            elif l[0] in HEX_SET:
+                words = l.split()
+                codepoint = int(words[0], base=16)
+                names = [" ".join(words[1:])]
+                crossrefs = []
+
+                while True:
+                    lineno, l = it.next()
+
+                    if l[0] not in WHITESPACE:
+                        break
+                    
+                    words = l.split()
+                    if words[0] in ["=", "%"]:
+                        names.append(" ".join(words[1:]))
+                    elif words[0] in ["x"]:
+                        crossrefs.append(" ".join(words[1:]))
+                    elif words[0] in ["*", "#", ":"]:
+                        pass # ignore
+                    else:
+                        raise ValueError("parsing unicode names list: not sure what to do with line %d" 
+                                % (lineno+1))
+                result.append(CharInfo(names=names, groups=[current_group],
+                    codepoint=codepoint, crossrefs=crossrefs))
+            else:
+                raise ValueError("parsing unicode names list: not sure what to do with line %d" 
+                        % (lineno+1))
+
+    except StopIteration:
+        pass
+
+    return result
+
+names_list = read_names_list()
+
+
+
+
+class UniCharWidget(urwid.FlowWidget):
+    def __init__(self, char_info):
+        self.char_info = char_info
+        self.collapsed = True
+
+    def selectable(self):
+        return True
+
+    def rows(self, (maxcol,), focus=False):
+        return 1
+
+    def _make_canvas(self, text, attr_str, maxcol):
+        attr = [(attr_str, len(text)),]
+
+        diff = maxcol - len(text)
+        if diff > 0:
+            text += " "*diff
+            attr.append((attr_str, diff))
+        else:
+            from urwid.util import rle_subseg
+            text = text[:maxcol]
+            attr = rle_subseg(attr, 0, maxcol)
+        
+        from urwid.util import apply_target_encoding
+        txt, cs = apply_target_encoding(text)
+
+        return urwid.TextCanvas([txt], [attr], [cs], maxcol=maxcol) 
+
+    def render(self, (maxcol,), focus=False):
+        if focus:
+            apfx = "focused "
+        else:
+            apfx = ""
+
+        attr = apfx+"unichar"
+
+        try:
+            from unicodedata import combining
+            uchar = self.char_info.unichar
+            if combining(uchar):
+                uchar = uchar+"A"
+            return self._make_canvas(
+                    uchar + " " + self.char_info.names[0],
+                    attr, maxcol)
+        except urwid.canvas.CanvasError:
+            return self._make_canvas(
+                    "(ERROR) " + self.char_info.names[0],
+                    attr, maxcol)
+
+
+    def keypress(self, size, key):
+        return key
+
+
+
+
+def get_uc_list(filter_expr):
+    words = [word for word in filter_expr.lower().split() if word]
+
+    last_group = None
+
+    result = []
+
+    from unicodedata import combining, category
+    for ci in names_list:
+        match = True
+        for word in words:
+            if not any(word in sn for sn in ci.search_names):
+                match = False
+                break
+
+        if match:
+            cat = category(ci.unichar)
+            if "C" not in cat and cat not in ["Sk", "Lm"]:
+                cigrp = ci.groups[0]
+                if cigrp != last_group:
+                    result.append(urwid.AttrWrap(
+                        urwid.Text(" - %s -" % cigrp),
+                        "group header", "focused group header"))
+
+                result.append(UniCharWidget(ci))
+
+                last_group = cigrp
+
+    return result
+
+
+
+
+def run():
+    cols, rows = ui.get_cols_rows()
+
+    pre = urwid.Edit()
+    pre_wrap = urwid.AttrWrap(pre, "input")
+    post = urwid.Text("")
+
+    uc_filt = urwid.Edit()
+    uc_list_walker = urwid.SimpleListWalker([])
+
+    uc_listbox = urwid.ListBox(uc_list_walker)
+    uc_list_wrap = urwid.AttrWrap(uc_listbox, "input")
+
+    main_pile = urwid.Pile([
+        ("flow", urwid.AttrWrap(
+            urwid.Text("Mathy Unicode Input Helper (C) Andreas Kloeckner 2009", align="center"),
+            "title")),
+        ("fixed", 1, urwid.SolidFill()),
+        ("flow", urwid.Text("Text to transform?")),
+        ("flow", pre_wrap),
+        ("flow", urwid.Text("Transformed text:")),
+        ("flow", urwid.AttrWrap(post, "result")),
+        ("fixed", 1, urwid.SolidFill()),
+        ("flow", urwid.Text("Filter for list of Unicode characters:")),
+        ("flow", urwid.AttrWrap(uc_filt, "input")),
+        ("fixed", 1, urwid.SolidFill()),
+        ("weight", 1, uc_list_wrap)
+        ])
+
+    w = urwid.AttrWrap(
+            urwid.LineBox(
+                urwid.Columns([
+                    ("fixed", 1, urwid.SolidFill()),
+                    main_pile,
+                    ("fixed", 1, urwid.SolidFill())
+                    ]),
+                ),
+            "background")
+
+
+    last_search = uc_filt.get_edit_text()
+    uc_list_walker[:] = get_uc_list(last_search)
+
+    while True:
+        canvas = w.render( (cols, rows), focus=True )
+        ui.draw_screen((cols, rows), canvas)
+
+        keys = ui.get_input()
+        for k in keys:
+            if k == "window resize":
+                cols, rows = ui.get_cols_rows()
+                continue
+            elif k == "tab" and main_pile.get_focus() == uc_list_wrap:
+                main_pile.set_focus(pre_wrap)
+            elif k == "tab" and main_pile.get_focus() == pre_wrap:
+                main_pile.set_focus(uc_list_wrap)
+            elif k == "esc":
+                    return pre.get_edit_text(), transform(pre.get_edit_text())
+            elif k == "+":
+                if main_pile.get_focus() == uc_list_wrap:
+                    ucw, pos = uc_listbox.get_focus()
+                    pre.insert_text(ucw.char_info.unichar)
+            elif k == "enter":
+                if main_pile.get_focus() == uc_list_wrap:
+                    ucw, pos = uc_listbox.get_focus()
+                    pre.insert_text(ucw.char_info.unichar)
+                    main_pile.set_focus(pre_wrap)
+            elif w.selectable():
+                w.keypress((cols, rows), k)
+                if uc_filt.get_edit_text() != last_search:
+                    last_search = uc_filt.get_edit_text()
+                    uc_list_walker[:] = get_uc_list(last_search)
+
+        post.set_text(transform(pre.get_edit_text()))
+
+pre, post = ui.run_wrapper(run)
+print "Untransformed:"
+print "  ", pre
+print "Transformed:"
+print "  ", post
+
