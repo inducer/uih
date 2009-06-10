@@ -1,0 +1,5 @@
+#! /bin/sh
+ME=`readlink $0`
+DIR=`dirname "$ME"`
+MYDIR=$(cd "$DIR" && pwd) 
+gnome-terminal --title="Unicode Input Helper" --zoom=2 -e $MYDIR/uih

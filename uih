@@ -10,7 +10,7 @@ ui = urwid.curses_display.Screen()
 ui.register_palette([
 	('input', 'black', 'dark cyan'),
 	('background', 'black', 'light gray'),
-	('result', 'white', 'black'),
+	('result', 'light gray', 'black'),
 	('title', 'white', 'dark blue'),
 
 	('unichar', 'black', 'dark cyan'),
@@ -168,7 +168,7 @@ class UniCharWidget(urwid.FlowWidget):
             from unicodedata import combining
             uchar = self.char_info.unichar
             if combining(uchar):
-                uchar = uchar+"A"
+                uchar = "A"+uchar
             return self._make_canvas(
                     uchar + " " + self.char_info.names[0],
                     attr, maxcol)
@@ -225,6 +225,7 @@ def run():
     post = urwid.Text("")
 
     uc_filt = urwid.Edit()
+    uc_filt_wrap = urwid.AttrWrap(uc_filt, "input")
     uc_list_walker = urwid.SimpleListWalker([])
 
     uc_listbox = urwid.ListBox(uc_list_walker)
@@ -241,7 +242,7 @@ def run():
         ("flow", urwid.AttrWrap(post, "result")),
         ("fixed", 1, urwid.SolidFill()),
         ("flow", urwid.Text("Filter for list of Unicode characters:")),
-        ("flow", urwid.AttrWrap(uc_filt, "input")),
+        ("flow", uc_filt_wrap),
         ("fixed", 1, urwid.SolidFill()),
         ("weight", 1, uc_list_wrap)
         ])
@@ -269,10 +270,13 @@ def run():
             if k == "window resize":
                 cols, rows = ui.get_cols_rows()
                 continue
-            elif k == "tab" and main_pile.get_focus() == uc_list_wrap:
-                main_pile.set_focus(pre_wrap)
-            elif k == "tab" and main_pile.get_focus() == pre_wrap:
-                main_pile.set_focus(uc_list_wrap)
+            elif k == "f" and main_pile.get_focus() == uc_list_wrap:
+                main_pile.set_focus(uc_filt_wrap)
+            elif k == "tab":
+                if main_pile.get_focus() == uc_list_wrap:
+                    main_pile.set_focus(pre_wrap)
+                elif main_pile.get_focus() == pre_wrap:
+                    main_pile.set_focus(uc_list_wrap)
             elif k == "esc":
                     return pre.get_edit_text(), transform(pre.get_edit_text())
             elif k == "+":
@@ -284,6 +288,8 @@ def run():
                     ucw, pos = uc_listbox.get_focus()
                     pre.insert_text(ucw.char_info.unichar)
                     main_pile.set_focus(pre_wrap)
+                elif main_pile.get_focus() == uc_filt_wrap:
+                    main_pile.set_focus(uc_list_wrap)
             elif w.selectable():
                 w.keypress((cols, rows), k)
                 if uc_filt.get_edit_text() != last_search:
