@@ -8,17 +8,17 @@ import re
 
 ui = urwid.curses_display.Screen()
 ui.register_palette([
-	('input', 'black', 'dark cyan'),
-	('background', 'black', 'light gray'),
-	('result', 'light gray', 'black'),
-	('title', 'white', 'dark blue'),
+        ('input', 'black', 'dark cyan'),
+        ('background', 'black', 'light gray'),
+        ('result', 'light gray', 'black'),
+        ('title', 'white', 'dark blue'),
 
-	('unichar', 'black', 'dark cyan'),
-	('focused unichar', 'black', 'dark green'),
+        ('unichar', 'black', 'dark cyan'),
+        ('focused unichar', 'black', 'dark green'),
 
-	('group header', 'light gray', 'dark cyan'),
-	('focused group header', 'light gray', 'dark green'),
-	] )
+        ('group header', 'light gray', 'dark cyan'),
+        ('focused group header', 'light gray', 'dark green'),
+        ] )
 
 
 
@@ -62,12 +62,17 @@ def read_names_list():
     if not exists(NL_FILENAME):
         print "one second... fetching unicode names list..."
         from urllib2 import urlopen
-        nl = urlopen("http://www.unicode.org/Public/5.1.0/ucd/NamesList.txt").read()
+        nl = urlopen("http://www.unicode.org/Public/6.1.0/ucd/NamesList.txt").read()
         outf = gzip.open(NL_FILENAME, "w")
         outf.write(nl)
         outf.close()
 
-    it = enumerate(iter(gzip.open(NL_FILENAME, "ru")))
+    uncompressed_nl = gzip.open(NL_FILENAME, "r").read().decode("utf-8", errors="replace")
+    lines = uncompressed_nl.split("\n")
+    while not lines[-1]:
+        lines.pop()
+
+    it = iter(enumerate(lines))
 
     HEX_SET = "0123456789ABCDEF"
     WHITESPACE = " \t"
@@ -76,6 +81,7 @@ def read_names_list():
     current_group = ""
     try:
         lineno, l = it.next()
+
         while True:
             assert l
             if l[0] == "@":
@@ -90,18 +96,21 @@ def read_names_list():
                             break
                 else:
                     lineno, l = it.next()
+            elif l[0] in WHITESPACE:
+                lineno, l = it.next()
             elif l[0] in HEX_SET:
                 words = l.split()
                 codepoint = int(words[0], base=16)
                 names = [" ".join(words[1:])]
                 crossrefs = []
+                #print hex(codepoint), names[0]
 
                 while True:
                     lineno, l = it.next()
 
                     if l[0] not in WHITESPACE:
                         break
-                    
+
                     words = l.split()
                     if words[0] in ["=", "%"]:
                         names.append(" ".join(words[1:]))
@@ -110,12 +119,12 @@ def read_names_list():
                     elif words[0] in ["*", "#", ":"]:
                         pass # ignore
                     else:
-                        raise ValueError("parsing unicode names list: not sure what to do with line %d" 
+                        raise ValueError("parsing unicode names list: not sure what to do with line %d"
                                 % (lineno+1))
                 result.append(CharInfo(names=names, groups=[current_group],
                     codepoint=codepoint, crossrefs=crossrefs))
             else:
-                raise ValueError("parsing unicode names list: not sure what to do with line %d" 
+                raise ValueError("parsing unicode names list: not sure what to do with line %d"
                         % (lineno+1))
 
     except StopIteration:
@@ -150,11 +159,11 @@ class UniCharWidget(urwid.FlowWidget):
             from urwid.util import rle_subseg
             text = text[:maxcol]
             attr = rle_subseg(attr, 0, maxcol)
-        
+
         from urwid.util import apply_target_encoding
         txt, cs = apply_target_encoding(text)
 
-        return urwid.TextCanvas([txt], [attr], [cs], maxcol=maxcol) 
+        return urwid.TextCanvas([txt], [attr], [cs], maxcol=maxcol)
 
     def render(self, (maxcol,), focus=False):
         if focus:
@@ -191,7 +200,7 @@ def get_uc_list(filter_expr):
 
     result = []
 
-    from unicodedata import combining, category
+    from unicodedata import category
     for ci in names_list:
         match = True
         for word in words:
@@ -200,17 +209,18 @@ def get_uc_list(filter_expr):
                 break
 
         if match:
-            cat = category(ci.unichar)
-            if "C" not in cat and cat not in ["Sk", "Lm"]:
-                cigrp = ci.groups[0]
-                if cigrp != last_group:
-                    result.append(urwid.AttrWrap(
-                        urwid.Text(" - %s -" % cigrp),
-                        "group header", "focused group header"))
+            if ord(ci.unichar) < 32:
+                continue
 
-                result.append(UniCharWidget(ci))
+            cigrp = ci.groups[0]
+            if cigrp != last_group:
+                result.append(urwid.AttrWrap(
+                    urwid.Text(" - %s -" % cigrp),
+                    "group header", "focused group header"))
 
-                last_group = cigrp
+            result.append(UniCharWidget(ci))
+
+            last_group = cigrp
 
     return result
 
