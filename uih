@@ -1,7 +1,8 @@
 #! /usr/bin/env python
 
-from __future__ import with_statement
+from __future__ import with_statement, print_function
 
+import six
 import urwid.curses_display
 import urwid
 import re
@@ -18,17 +19,14 @@ ui.register_palette([
 
         ('group header', 'light gray', 'dark cyan'),
         ('focused group header', 'light gray', 'dark green'),
-        ] )
-
-
-
+        ])
 
 
 def transform(s):
     def replace_entity(match):
         from htmlentitydefs import name2codepoint
         try:
-            return unichr(name2codepoint[match.group(1)])
+            return six.unichr(name2codepoint[match.group(1)])
         except KeyError:
             return match.group(0)
 
@@ -37,19 +35,16 @@ def transform(s):
     return s
 
 
-
-
 class CharInfo:
     def __init__(self, names, groups, codepoint, crossrefs):
         self.names = names
-        self.search_names = [name.lower() for name in self.names] + \
-                [grp.lower() for grp in groups]
+        self.search_names = (
+                [name.lower() for name in self.names]
+                + [grp.lower() for grp in groups])
         self.groups = groups
         self.codepoint = codepoint
         self.crossrefs = crossrefs
-        self.unichar = unichr(codepoint)
-
-
+        self.unichar = six.unichr(codepoint)
 
 
 def read_names_list():
@@ -60,14 +55,15 @@ def read_names_list():
     from os.path import exists
     import gzip
     if not exists(NL_FILENAME):
-        print "one second... fetching unicode names list..."
-        from urllib2 import urlopen
+        print("one second... fetching unicode names list...")
+        from six.moves.urllib.request import urlopen
         nl = urlopen("http://www.unicode.org/Public/6.1.0/ucd/NamesList.txt").read()
         outf = gzip.open(NL_FILENAME, "w")
         outf.write(nl)
         outf.close()
 
-    uncompressed_nl = gzip.open(NL_FILENAME, "r").read().decode("utf-8", errors="replace")
+    uncompressed_nl = gzip.open(NL_FILENAME, "r").read().decode(
+            "utf-8", errors="replace")
     lines = uncompressed_nl.split("\n")
     while not lines[-1]:
         lines.pop()
@@ -77,10 +73,10 @@ def read_names_list():
     HEX_SET = "0123456789ABCDEF"
     WHITESPACE = " \t"
 
-    print "one second... reading unicode names list..."
+    print("one second... reading unicode names list...")
     current_group = ""
     try:
-        lineno, l = it.next()
+        lineno, l = six.next(it)
 
         while True:
             assert l
@@ -88,25 +84,25 @@ def read_names_list():
                 words = l.split()
                 if words[0] == "@":
                     current_group = " ".join(words[1:])
-                    lineno, l = it.next()
+                    lineno, l = six.next(it)
                 elif words[0].endswith("+"):
                     while True:
-                        lineno, l = it.next()
+                        lineno, l = six.next(it)
                         if l[0] not in WHITESPACE:
                             break
                 else:
-                    lineno, l = it.next()
+                    lineno, l = six.next(it)
             elif l[0] in WHITESPACE:
-                lineno, l = it.next()
+                lineno, l = six.next(it)
             elif l[0] in HEX_SET:
                 words = l.split()
                 codepoint = int(words[0], base=16)
                 names = [" ".join(words[1:])]
                 crossrefs = []
-                #print hex(codepoint), names[0]
+                #print(hex(codepoint), names[0])
 
                 while True:
-                    lineno, l = it.next()
+                    lineno, l = six.next(it)
 
                     if l[0] not in WHITESPACE:
                         break
@@ -117,14 +113,18 @@ def read_names_list():
                     elif words[0] in ["x"]:
                         crossrefs.append(" ".join(words[1:]))
                     elif words[0] in ["*", "#", ":"]:
-                        pass # ignore
+                        pass  # ignore
                     else:
-                        raise ValueError("parsing unicode names list: not sure what to do with line %d"
+                        raise ValueError(
+                                "parsing unicode names list: not sure what "
+                                "to do with line %d"
                                 % (lineno+1))
                 result.append(CharInfo(names=names, groups=[current_group],
                     codepoint=codepoint, crossrefs=crossrefs))
             else:
-                raise ValueError("parsing unicode names list: not sure what to do with line %d"
+                raise ValueError(
+                        "parsing unicode names list: not sure "
+                        "what to do with line %d"
                         % (lineno+1))
 
     except StopIteration:
@@ -135,8 +135,6 @@ def read_names_list():
 names_list = read_names_list()
 
 
-
-
 class UniCharWidget(urwid.FlowWidget):
     def __init__(self, char_info):
         self.char_info = char_info
@@ -145,11 +143,11 @@ class UniCharWidget(urwid.FlowWidget):
     def selectable(self):
         return True
 
-    def rows(self, (maxcol,), focus=False):
+    def rows(self, maxcol_tup, focus=False):
         return 1
 
     def _make_canvas(self, text, attr_str, maxcol):
-        attr = [(attr_str, len(text)),]
+        attr = [(attr_str, len(text)), ]
 
         diff = maxcol - len(text)
         if diff > 0:
@@ -165,7 +163,8 @@ class UniCharWidget(urwid.FlowWidget):
 
         return urwid.TextCanvas([txt], [attr], [cs], maxcol=maxcol)
 
-    def render(self, (maxcol,), focus=False):
+    def render(self, maxcol_tup, focus=False):
+        maxcol, = maxcol_tup
         if focus:
             apfx = "focused "
         else:
@@ -186,11 +185,8 @@ class UniCharWidget(urwid.FlowWidget):
                     "(ERROR) " + self.char_info.names[0],
                     attr, maxcol)
 
-
     def keypress(self, size, key):
         return key
-
-
 
 
 def get_uc_list(filter_expr):
@@ -200,7 +196,6 @@ def get_uc_list(filter_expr):
 
     result = []
 
-    from unicodedata import category
     for ci in names_list:
         match = True
         for word in words:
@@ -225,8 +220,6 @@ def get_uc_list(filter_expr):
     return result
 
 
-
-
 def run():
     cols, rows = ui.get_cols_rows()
 
@@ -243,7 +236,9 @@ def run():
 
     main_pile = urwid.Pile([
         ("flow", urwid.AttrWrap(
-            urwid.Text("Mathy Unicode Input Helper (C) Andreas Kloeckner 2009", align="center"),
+            urwid.Text(
+                "Mathy Unicode Input Helper (C) Andreas Kloeckner 2009",
+                align="center"),
             "title")),
         ("fixed", 1, urwid.SolidFill()),
         ("flow", urwid.Text("Text to transform?")),
@@ -267,12 +262,11 @@ def run():
                 ),
             "background")
 
-
     last_search = uc_filt.get_edit_text()
     uc_list_walker[:] = get_uc_list(last_search)
 
     while True:
-        canvas = w.render( (cols, rows), focus=True )
+        canvas = w.render((cols, rows), focus=True)
         ui.draw_screen((cols, rows), canvas)
 
         keys = ui.get_input()
@@ -309,8 +303,7 @@ def run():
         post.set_text(transform(pre.get_edit_text()))
 
 pre, post = ui.run_wrapper(run)
-print "Untransformed:"
-print "  ", pre
-print "Transformed:"
-print "  ", post
-
+print("Untransformed:")
+print("  ", pre)
+print("Transformed:")
+print("  ", post)
