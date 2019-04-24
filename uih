@@ -24,7 +24,7 @@ ui.register_palette([
 
 def transform(s):
     def replace_entity(match):
-        from htmlentitydefs import name2codepoint
+        from html.entities import name2codepoint
         try:
             return six.unichr(name2codepoint[match.group(1)])
         except KeyError:

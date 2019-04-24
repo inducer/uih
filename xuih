@@ -2,4 +2,4 @@
 ME=`readlink $0`
 DIR=`dirname "$ME"`
 MYDIR=$(cd "$DIR" && pwd) 
-gnome-terminal --zoom=2 -e $MYDIR/uih
+gnome-terminal --zoom=2 -- $MYDIR/uih
