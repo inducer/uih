@@ -1,30 +1,25 @@
 #! /usr/bin/env python
 
-from __future__ import with_statement, print_function
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from functools import partial
+from typing import TYPE_CHECKING, ClassVar
 
 import six
-import urwid.curses_display
 import urwid
-import re
-
-ui = urwid.curses_display.Screen()
-ui.register_palette([
-        ('input', 'black', 'dark cyan'),
-        ('background', 'black', 'light gray'),
-        ('result', 'light gray', 'black'),
-        ('title', 'white', 'dark blue'),
-
-        ('unichar', 'black', 'dark cyan'),
-        ('focused unichar', 'black', 'dark green'),
-
-        ('group header', 'light gray', 'dark cyan'),
-        ('focused group header', 'light gray', 'dark green'),
-        ])
+from typing_extensions import override
 
 
-def transform(s):
-    def replace_entity(match):
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+
+def transform(s: str):
+    def replace_entity(match: re.Match[str]):
         from html.entities import name2codepoint
+
         try:
             return six.unichr(name2codepoint[match.group(1)])
         except KeyError:
@@ -35,79 +30,88 @@ def transform(s):
     return s
 
 
+@dataclass
 class CharInfo:
-    def __init__(self, names, groups, codepoint, crossrefs):
-        self.names = names
-        self.search_names = (
-                [name.lower() for name in self.names]
-                + [grp.lower() for grp in groups])
-        self.groups = groups
-        self.codepoint = codepoint
-        self.crossrefs = crossrefs
-        self.unichar = six.unichr(codepoint)
+    names: Sequence[str]
+    groups: Sequence[str]
+    codepoint: int
+    crossrefs: Sequence[str]
+    unichar: str = ""
+
+    search_names: Sequence[str] = ()
+
+    def __post_init__(self):
+        self.unichar = chr(self.codepoint)
+        self.search_names = [
+                name.lower() for name in self.names
+            ] + [
+                grp.lower() for grp in self.groups
+            ]
 
 
 def read_names_list():
-    result = []
+    result: list[CharInfo] = []
 
-    NL_FILENAME = "/tmp/NamesList.txt.gz"
+    namelist_filename = "/tmp/NamesList.txt.gz"
 
-    from os.path import exists
     import gzip
-    if not exists(NL_FILENAME):
-        print("one second... fetching unicode names list...")
-        from six.moves.urllib.request import urlopen
-        nl = urlopen("http://www.unicode.org/Public/6.1.0/ucd/NamesList.txt").read()
-        outf = gzip.open(NL_FILENAME, "w")
-        outf.write(nl)
-        outf.close()
+    from os.path import exists
 
-    uncompressed_nl = gzip.open(NL_FILENAME, "r").read().decode(
-            "utf-8", errors="replace")
+    if not exists(namelist_filename):
+        print("one second... fetching unicode names list...")
+        from urllib.request import urlopen
+
+        nl = urlopen("http://www.unicode.org/Public/6.1.0/ucd/NamesList.txt").read()
+        with gzip.open(namelist_filename, "w") as outf:
+            outf.write(nl)
+
+    with gzip.open(namelist_filename, "r") as inf:
+        uncompressed_nl = inf.read().decode("utf-8", errors="replace")
+
     lines = uncompressed_nl.split("\n")
     while not lines[-1]:
         lines.pop()
 
     it = iter(enumerate(lines))
 
-    HEX_SET = "0123456789ABCDEF"
-    WHITESPACE = " \t"
+    hex_set = "0123456789ABCDEF"
+    whitespace = " \t"
 
     print("one second... reading unicode names list...")
     current_group = ""
     try:
-        lineno, l = six.next(it)
+        lineno, ln = six.next(it)
 
         while True:
-            assert l
-            if l[0] == "@":
-                words = l.split()
+            assert ln
+            if ln[0] == "@":
+                words = ln.split()
                 if words[0] == "@":
                     current_group = " ".join(words[1:])
-                    lineno, l = six.next(it)
+                    lineno, ln = six.next(it)
                 elif words[0].endswith("+"):
                     while True:
-                        lineno, l = six.next(it)
-                        if l[0] not in WHITESPACE:
+                        lineno, ln = six.next(it)
+                        if ln[0] not in whitespace:
                             break
                 else:
-                    lineno, l = six.next(it)
-            elif l[0] in WHITESPACE:
-                lineno, l = six.next(it)
-            elif l[0] in HEX_SET:
-                words = l.split()
+                    lineno, ln = six.next(it)
+            elif ln[0] in whitespace:
+                lineno, ln = six.next(it)
+            elif ln[0] in hex_set:
+                words = ln.split()
                 codepoint = int(words[0], base=16)
                 names = [" ".join(words[1:])]
-                crossrefs = []
-                #print(hex(codepoint), names[0])
+                crossrefs: list[str] = []
+                # print(hex(codepoint), names[0])
 
                 while True:
-                    lineno, l = six.next(it)
+                    lineno, ln = six.next(it)
 
-                    if l[0] not in WHITESPACE:
+                    if ln[0] not in whitespace:
                         break
 
-                    words = l.split()
+                    words = ln.split()
                     if words[0] in ["=", "%"]:
                         names.append(" ".join(words[1:]))
                     elif words[0] in ["x"]:
@@ -116,30 +120,44 @@ def read_names_list():
                         pass  # ignore
                     else:
                         raise ValueError(
-                                "parsing unicode names list: not sure what "
-                                "to do with line %d"
-                                % (lineno+1))
-                result.append(CharInfo(names=names, groups=[current_group],
-                    codepoint=codepoint, crossrefs=crossrefs))
+                            "parsing unicode names list: not sure what "
+                            "to do with line %d" % (lineno + 1)
+                        )
+                result.append(
+                    CharInfo(
+                        names=names,
+                        groups=[current_group],
+                        codepoint=codepoint,
+                        crossrefs=crossrefs,
+                    )
+                )
             else:
                 raise ValueError(
-                        "parsing unicode names list: not sure "
-                        "what to do with line %d"
-                        % (lineno+1))
+                    "parsing unicode names list: not sure "
+                    "what to do with line %d" % (lineno + 1)
+                )
 
     except StopIteration:
         pass
 
     return result
 
+
 names_list = read_names_list()
 
 
-class UniCharWidget(urwid.FlowWidget):
-    def __init__(self, char_info):
+class UniCharWidget(urwid.Widget):
+    _sizing: ClassVar[frozenset[urwid.Sizing]] = frozenset([urwid.Sizing.FLOW])
+
+    char_info: CharInfo
+    collapsed: bool = True
+
+    def __init__(self, char_info: CharInfo):
         self.char_info = char_info
         self.collapsed = True
+        super().__init__()
 
+    @override
     def selectable(self):
         return True
 
@@ -147,54 +165,55 @@ class UniCharWidget(urwid.FlowWidget):
         return 1
 
     def _make_canvas(self, text, attr_str, maxcol):
-        attr = [(attr_str, len(text)), ]
+        attr = [
+            (attr_str, len(text)),
+        ]
 
         diff = maxcol - len(text)
         if diff > 0:
-            text += " "*diff
+            text += " " * diff
             attr.append((attr_str, diff))
         else:
             from urwid.util import rle_subseg
+
             text = text[:maxcol]
             attr = rle_subseg(attr, 0, maxcol)
 
         from urwid.util import apply_target_encoding
+
         txt, cs = apply_target_encoding(text)
 
         return urwid.TextCanvas([txt], [attr], [cs], maxcol=maxcol)
 
+    @override
     def render(self, maxcol_tup, focus=False):
-        maxcol, = maxcol_tup
-        if focus:
-            apfx = "focused "
-        else:
-            apfx = ""
+        (maxcol,) = maxcol_tup
+        apfx = "focused " if focus else ""
 
-        attr = apfx+"unichar"
+        attr = apfx + "unichar"
 
         try:
             from unicodedata import combining
+
             uchar = self.char_info.unichar
             if combining(uchar):
-                uchar = "A"+uchar
+                uchar = "A" + uchar
             return self._make_canvas(
-                    uchar + " " + self.char_info.names[0],
-                    attr, maxcol)
+                uchar + " " + self.char_info.names[0], attr, maxcol
+            )
         except urwid.canvas.CanvasError:
-            return self._make_canvas(
-                    "(ERROR) " + self.char_info.names[0],
-                    attr, maxcol)
+            return self._make_canvas("(ERROR) " + self.char_info.names[0], attr, maxcol)
 
     def keypress(self, size, key):
         return key
 
 
-def get_uc_list(filter_expr):
+def get_uc_list(filter_expr: str):
     words = [word for word in filter_expr.lower().split() if word]
 
     last_group = None
 
-    result = []
+    result: list[urwid.Widget] = []
 
     for ci in names_list:
         match = True
@@ -209,9 +228,13 @@ def get_uc_list(filter_expr):
 
             cigrp = ci.groups[0]
             if cigrp != last_group:
-                result.append(urwid.AttrWrap(
-                    urwid.Text(" - %s -" % cigrp),
-                    "group header", "focused group header"))
+                result.append(
+                    urwid.AttrWrap(
+                        urwid.Text(" - %s -" % cigrp),
+                        "group header",
+                        "focused group header",
+                    )
+                )
 
             result.append(UniCharWidget(ci))
 
@@ -220,7 +243,7 @@ def get_uc_list(filter_expr):
     return result
 
 
-def run():
+def run(ui):
     cols, rows = ui.get_cols_rows()
 
     pre = urwid.Edit()
@@ -235,11 +258,16 @@ def run():
     uc_list_wrap = urwid.AttrWrap(uc_listbox, "input")
 
     main_pile = urwid.Pile([
-        ("flow", urwid.AttrWrap(
-            urwid.Text(
-                "Mathy Unicode Input Helper (C) Andreas Kloeckner 2009",
-                align="center"),
-            "title")),
+        (
+            "flow",
+            urwid.AttrWrap(
+                urwid.Text(
+                    "Mathy Unicode Input Helper (C) Andreas Kloeckner 2009",
+                    align="center",
+                ),
+                "title",
+            ),
+        ),
         ("fixed", 1, urwid.SolidFill()),
         ("flow", urwid.Text("Text to transform?")),
         ("flow", pre_wrap),
@@ -249,18 +277,19 @@ def run():
         ("flow", urwid.Text("Filter for list of Unicode characters:")),
         ("flow", uc_filt_wrap),
         ("fixed", 1, urwid.SolidFill()),
-        ("weight", 1, uc_list_wrap)
-        ])
+        ("weight", 1, uc_list_wrap),
+    ])
 
     w = urwid.AttrWrap(
-            urwid.LineBox(
-                urwid.Columns([
-                    ("fixed", 1, urwid.SolidFill()),
-                    main_pile,
-                    ("fixed", 1, urwid.SolidFill())
-                    ]),
-                ),
-            "background")
+        urwid.LineBox(
+            urwid.Columns([
+                ("fixed", 1, urwid.SolidFill()),
+                main_pile,
+                ("fixed", 1, urwid.SolidFill()),
+            ]),
+        ),
+        "background",
+    )
 
     last_search = uc_filt.get_edit_text()
     uc_list_walker[:] = get_uc_list(last_search)
@@ -274,26 +303,26 @@ def run():
             if k == "window resize":
                 cols, rows = ui.get_cols_rows()
                 continue
-            elif k == "f" and main_pile.get_focus() == uc_list_wrap:
-                main_pile.set_focus(uc_filt_wrap)
+            elif k == "f" and main_pile.focus == uc_list_wrap:
+                main_pile.focus = uc_filt_wrap
             elif k == "tab":
-                if main_pile.get_focus() == uc_list_wrap:
-                    main_pile.set_focus(pre_wrap)
-                elif main_pile.get_focus() == pre_wrap:
-                    main_pile.set_focus(uc_list_wrap)
+                if main_pile.focus == uc_list_wrap:
+                    main_pile.focus = pre_wrap
+                elif main_pile.focus == pre_wrap:
+                    main_pile.focus = uc_list_wrap
             elif k == "esc":
-                    return pre.get_edit_text(), transform(pre.get_edit_text())
+                return pre.get_edit_text(), transform(pre.get_edit_text())
             elif k == "+":
-                if main_pile.get_focus() == uc_list_wrap:
-                    ucw, pos = uc_listbox.get_focus()
+                if main_pile.focus == uc_list_wrap:
+                    ucw = uc_listbox.focus
                     pre.insert_text(ucw.char_info.unichar)
             elif k == "enter":
-                if main_pile.get_focus() == uc_list_wrap:
-                    ucw, pos = uc_listbox.get_focus()
+                if main_pile.focus == uc_list_wrap:
+                    ucw = uc_listbox.focus
                     pre.insert_text(ucw.char_info.unichar)
-                    main_pile.set_focus(pre_wrap)
-                elif main_pile.get_focus() == uc_filt_wrap:
-                    main_pile.set_focus(uc_list_wrap)
+                    main_pile.focus = pre_wrap
+                elif main_pile.focus == uc_filt_wrap:
+                    main_pile.focus = uc_list_wrap
             elif w.selectable():
                 w.keypress((cols, rows), k)
                 if uc_filt.get_edit_text() != last_search:
@@ -302,8 +331,26 @@ def run():
 
         post.set_text(transform(pre.get_edit_text()))
 
-pre, post = ui.run_wrapper(run)
-print("Untransformed:")
-print("  ", pre)
-print("Transformed:")
-print("  ", post)
+
+def main():
+    ui = urwid.curses_display.Screen()
+    ui.register_palette([
+        ("input", "black", "dark cyan"),
+        ("background", "black", "light gray"),
+        ("result", "light gray", "black"),
+        ("title", "white", "dark blue"),
+        ("unichar", "black", "dark cyan"),
+        ("focused unichar", "black", "dark green"),
+        ("group header", "light gray", "dark cyan"),
+        ("focused group header", "light gray", "dark green"),
+    ])
+
+    pre, post = ui.run_wrapper(partial(run, ui))
+    print("Untransformed:")
+    print("  ", pre)
+    print("Transformed:")
+    print("  ", post)
+
+
+if __name__ == "__main__":
+    main()
