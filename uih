@@ -1,14 +1,27 @@
-#! /usr/bin/env python
+#!/usr/bin/env -S uv run --script
+#
+# /// script
+# dependencies = [
+#   "urwid",
+#   "typing_extensions",
+#   "pyperclip",
+#   "urwid",
+#   "platformdirs",
+# ]
+# ///
+
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
-from functools import partial
-from typing import TYPE_CHECKING, ClassVar
+from pathlib import Path
+from typing import TYPE_CHECKING, ClassVar, cast
 
-import six
+import pyperclip
 import urwid
+from platformdirs import user_cache_dir
 from typing_extensions import override
 
 
@@ -21,7 +34,7 @@ def transform(s: str):
         from html.entities import name2codepoint
 
         try:
-            return six.unichr(name2codepoint[match.group(1)])
+            return chr(name2codepoint[match.group(1)])
         except KeyError:
             return match.group(0)
 
@@ -52,16 +65,20 @@ class CharInfo:
 def read_names_list():
     result: list[CharInfo] = []
 
-    namelist_filename = "/tmp/NamesList.txt.gz"
-
     import gzip
     from os.path import exists
+
+    url = "http://www.unicode.org/Public/6.1.0/ucd/NamesList.txt"
+    url_hash = hashlib.sha256(url.encode()).hexdigest()[:8]
+    cache_dir = Path(user_cache_dir("uih", "andreas"))
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    namelist_filename = cache_dir / f"NamesList_{url_hash}.txt.gz"
 
     if not exists(namelist_filename):
         print("one second... fetching unicode names list...")
         from urllib.request import urlopen
 
-        nl = urlopen("http://www.unicode.org/Public/6.1.0/ucd/NamesList.txt").read()
+        nl = urlopen(url).read()
         with gzip.open(namelist_filename, "w") as outf:
             outf.write(nl)
 
@@ -80,7 +97,7 @@ def read_names_list():
     print("one second... reading unicode names list...")
     current_group = ""
     try:
-        lineno, ln = six.next(it)
+        lineno, ln = next(it)
 
         while True:
             assert ln
@@ -88,16 +105,16 @@ def read_names_list():
                 words = ln.split()
                 if words[0] == "@":
                     current_group = " ".join(words[1:])
-                    lineno, ln = six.next(it)
+                    lineno, ln = next(it)
                 elif words[0].endswith("+"):
                     while True:
-                        lineno, ln = six.next(it)
+                        lineno, ln = next(it)
                         if ln[0] not in whitespace:
                             break
                 else:
-                    lineno, ln = six.next(it)
+                    lineno, ln = next(it)
             elif ln[0] in whitespace:
-                lineno, ln = six.next(it)
+                lineno, ln = next(it)
             elif ln[0] in hex_set:
                 words = ln.split()
                 codepoint = int(words[0], base=16)
@@ -106,7 +123,7 @@ def read_names_list():
                 # print(hex(codepoint), names[0])
 
                 while True:
-                    lineno, ln = six.next(it)
+                    lineno, ln = next(it)
 
                     if ln[0] not in whitespace:
                         break
@@ -161,10 +178,11 @@ class UniCharWidget(urwid.Widget):
     def selectable(self):
         return True
 
-    def rows(self, maxcol_tup, focus=False):
+    @override
+    def rows(self, maxcol_tup: tuple[int], focus: bool = False):
         return 1
 
-    def _make_canvas(self, text, attr_str, maxcol):
+    def _make_canvas(self, text: str, attr_str: str, maxcol: int):
         attr = [
             (attr_str, len(text)),
         ]
@@ -186,7 +204,7 @@ class UniCharWidget(urwid.Widget):
         return urwid.TextCanvas([txt], [attr], [cs], maxcol=maxcol)
 
     @override
-    def render(self, maxcol_tup, focus=False):
+    def render(self, maxcol_tup: tuple[int], focus: bool = False):
         (maxcol,) = maxcol_tup
         apfx = "focused " if focus else ""
 
@@ -204,6 +222,7 @@ class UniCharWidget(urwid.Widget):
         except urwid.canvas.CanvasError:
             return self._make_canvas("(ERROR) " + self.char_info.names[0], attr, maxcol)
 
+    @override
     def keypress(self, size, key):
         return key
 
@@ -229,7 +248,7 @@ def get_uc_list(filter_expr: str):
             cigrp = ci.groups[0]
             if cigrp != last_group:
                 result.append(
-                    urwid.AttrWrap(
+                    urwid.AttrMap(
                         urwid.Text(" - %s -" % cigrp),
                         "group header",
                         "focused group header",
@@ -243,24 +262,93 @@ def get_uc_list(filter_expr: str):
     return result
 
 
-def run(ui):
-    cols, rows = ui.get_cols_rows()
+def show_overlay(loop: urwid.MainLoop, message: str):
+    """Briefly show a message overlay."""
+    old_widget = loop.widget
+    text = urwid.Text(f"\n {message} \n", align="center")
+    fill = urwid.Filler(urwid.LineBox(text))
+    overlay = urwid.Overlay(
+        fill, old_widget, "center", ("relative", 60), "middle", ("relative", 20)
+    )
 
+    def remove_overlay(loop: urwid.MainLoop, data):
+        loop.widget = old_widget
+
+    loop.widget = overlay
+    loop.set_alarm_in(1.5, remove_overlay)
+
+
+def run(loop_list: list[urwid.MainLoop]):
     pre = urwid.Edit()
-    pre_wrap = urwid.AttrWrap(pre, "input")
+    pre_wrap = urwid.AttrMap(pre, "input")
     post = urwid.Text("")
 
     uc_filt = urwid.Edit()
-    uc_filt_wrap = urwid.AttrWrap(uc_filt, "input")
+    uc_filt_wrap = urwid.AttrMap(uc_filt, "input")
     uc_list_walker = urwid.SimpleListWalker([])
 
     uc_listbox = urwid.ListBox(uc_list_walker)
-    uc_list_wrap = urwid.AttrWrap(uc_listbox, "input")
+    uc_list_wrap = urwid.AttrMap(uc_listbox, "input")
 
-    main_pile = urwid.Pile([
+    def copy_to_clipboard(_button: urwid.Button):
+        loop, = loop_list
+        show_overlay(loop, "Copied to clipboard")
+        pyperclip.copy(cast("str", post.text))
+
+    copy_button = urwid.Button("Copy", on_press=copy_to_clipboard)
+    copy_button_wrap = urwid.AttrWrap(copy_button, "input")
+
+    # Connect signals for reactive updates
+    def on_pre_change(widget, new_value):
+        post.set_text(transform(new_value))
+
+    urwid.connect_signal(pre, "change", on_pre_change)
+
+    def on_filt_change(widget, new_value):
+        uc_list_walker[:] = get_uc_list(new_value)
+
+    urwid.connect_signal(uc_filt, "change", on_filt_change)
+
+    class MainPile(urwid.Pile):
+        @override
+        def keypress(self, size, key):
+            if key == "esc":
+                raise urwid.ExitMainLoop()
+            elif key == "+":
+                if self.focus == uc_list_wrap:
+                    ucw = uc_listbox.focus
+                    if ucw is not None:
+                        pre.insert_text(ucw.char_info.unichar)
+                    return None
+            elif key == "enter":
+                if self.focus == uc_list_wrap:
+                    ucw = uc_listbox.focus
+                    if ucw is not None:
+                        pre.insert_text(ucw.char_info.unichar)
+                    self.focus = pre_wrap
+                    return None
+                elif self.focus == uc_filt_wrap:
+                    self.focus = uc_list_wrap
+                    return None
+            elif key == "tab":
+                if self.focus == uc_list_wrap:
+                    self.focus = pre_wrap
+                elif self.focus == pre_wrap:
+                    self.focus = uc_list_wrap
+                return None
+            elif key == "ctrl u":
+                copy_to_clipboard(copy_button)
+            elif key == "f":
+                if self.focus == uc_list_wrap:
+                    self.focus = uc_filt_wrap
+                return None
+
+            return super().keypress(size, key)
+
+    main_pile = MainPile([
         (
             "flow",
-            urwid.AttrWrap(
+            urwid.AttrMap(
                 urwid.Text(
                     "Mathy Unicode Input Helper (C) Andreas Kloeckner 2009",
                     align="center",
@@ -272,84 +360,63 @@ def run(ui):
         ("flow", urwid.Text("Text to transform?")),
         ("flow", pre_wrap),
         ("flow", urwid.Text("Transformed text:")),
-        ("flow", urwid.AttrWrap(post, "result")),
+        ("flow", urwid.Columns([
+            ("weight", 1, urwid.AttrMap(post, "result")),
+            ("fixed", 10, copy_button_wrap),
+        ])),
         ("fixed", 1, urwid.SolidFill()),
         ("flow", urwid.Text("Filter for list of Unicode characters:")),
         ("flow", uc_filt_wrap),
         ("fixed", 1, urwid.SolidFill()),
         ("weight", 1, uc_list_wrap),
+        ("fixed", 1, urwid.SolidFill()),
+        ("flow", urwid.Text("^u: copy transformed text | esc: exit")),
     ])
 
-    w = urwid.AttrWrap(
-        urwid.LineBox(
-            urwid.Columns([
-                ("fixed", 1, urwid.SolidFill()),
-                main_pile,
-                ("fixed", 1, urwid.SolidFill()),
-            ]),
-        ),
+    w = urwid.AttrMap(
+        urwid.Columns([
+            ("fixed", 1, urwid.SolidFill()),
+            main_pile,
+            ("fixed", 1, urwid.SolidFill()),
+        ]),
         "background",
     )
 
-    last_search = uc_filt.get_edit_text()
-    uc_list_walker[:] = get_uc_list(last_search)
+    # Initialize list
+    uc_list_walker[:] = get_uc_list(uc_filt.get_edit_text())
 
-    while True:
-        canvas = w.render((cols, rows), focus=True)
-        ui.draw_screen((cols, rows), canvas)
-
-        keys = ui.get_input()
-        for k in keys:
-            if k == "window resize":
-                cols, rows = ui.get_cols_rows()
-                continue
-            elif k == "f" and main_pile.focus == uc_list_wrap:
-                main_pile.focus = uc_filt_wrap
-            elif k == "tab":
-                if main_pile.focus == uc_list_wrap:
-                    main_pile.focus = pre_wrap
-                elif main_pile.focus == pre_wrap:
-                    main_pile.focus = uc_list_wrap
-            elif k == "esc":
-                return pre.get_edit_text(), transform(pre.get_edit_text())
-            elif k == "+":
-                if main_pile.focus == uc_list_wrap:
-                    ucw = uc_listbox.focus
-                    pre.insert_text(ucw.char_info.unichar)
-            elif k == "enter":
-                if main_pile.focus == uc_list_wrap:
-                    ucw = uc_listbox.focus
-                    pre.insert_text(ucw.char_info.unichar)
-                    main_pile.focus = pre_wrap
-                elif main_pile.focus == uc_filt_wrap:
-                    main_pile.focus = uc_list_wrap
-            elif w.selectable():
-                w.keypress((cols, rows), k)
-                if uc_filt.get_edit_text() != last_search:
-                    last_search = uc_filt.get_edit_text()
-                    uc_list_walker[:] = get_uc_list(last_search)
-
-        post.set_text(transform(pre.get_edit_text()))
+    return w, pre
 
 
 def main():
-    ui = urwid.curses_display.Screen()
-    ui.register_palette([
-        ("input", "black", "dark cyan"),
-        ("background", "black", "light gray"),
-        ("result", "light gray", "black"),
-        ("title", "white", "dark blue"),
-        ("unichar", "black", "dark cyan"),
-        ("focused unichar", "black", "dark green"),
-        ("group header", "light gray", "dark cyan"),
-        ("focused group header", "light gray", "dark green"),
-    ])
+    loop_list = []
+    w, pre = run(loop_list)
 
-    pre, post = ui.run_wrapper(partial(run, ui))
+    loop = urwid.MainLoop(
+        w,
+        screen=urwid.curses_display.Screen(),
+        palette=[
+            ("input", "black", "dark cyan"),
+            ("background", "black", "light gray"),
+            ("result", "light gray", "black"),
+            ("title", "white", "dark blue"),
+            ("unichar", "black", "dark cyan"),
+            ("focused unichar", "black", "dark green"),
+            ("group header", "light gray", "dark cyan"),
+            ("focused group header", "light gray", "dark green"),
+        ],
+    )
+    loop_list[:] = [loop]
+
+    loop.run()
+
+    pre_text = pre.get_edit_text()
+    post_text = transform(pre_text)
+
     print("Untransformed:")
-    print("  ", pre)
+    print("  ", pre_text)
     print("Transformed:")
-    print("  ", post)
+    print("  ", post_text)
 
 
 if __name__ == "__main__":
